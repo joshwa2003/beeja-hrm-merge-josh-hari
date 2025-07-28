@@ -46,7 +46,7 @@ const ChatSidebar = ({
   onlineUsers,
   currentUser
 }) => {
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTab] = useState('chats');
   const theme = useTheme();
 
   const formatLastSeen = (date) => {

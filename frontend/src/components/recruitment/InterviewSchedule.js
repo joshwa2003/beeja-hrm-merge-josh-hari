@@ -454,19 +454,52 @@ const InterviewSchedule = () => {
                         />
                       </TableCell>
                       <TableCell>
-                        <Box display="flex" gap={1}>
+                        <Box display="flex" gap={1} alignItems="center">
+                          {/* Feedback Button - Always visible */}
+                          <Tooltip title="Submit Feedback">
+                            <IconButton
+                              color="primary"
+                              size="medium"
+                              onClick={() => {
+                                setSelectedInterview(interview);
+                                setShowFeedbackModal(true);
+                              }}
+                              sx={{
+                                bgcolor: 'primary.main',
+                                color: 'white',
+                                '&:hover': {
+                                  bgcolor: 'primary.dark',
+                                },
+                                minWidth: '40px',
+                                minHeight: '40px'
+                              }}
+                            >
+                              <FeedbackIcon />
+                            </IconButton>
+                          </Tooltip>
+                          
                           {interview.mode === 'Online' && interview.meetingLink && (
                             <Tooltip title="Join Meeting">
                               <IconButton
-                                size="small"
-                                color="primary"
+                                size="medium"
+                                color="info"
                                 href={interview.meetingLink}
                                 target="_blank"
+                                sx={{
+                                  bgcolor: 'info.main',
+                                  color: 'white',
+                                  '&:hover': {
+                                    bgcolor: 'info.dark',
+                                  },
+                                  minWidth: '40px',
+                                  minHeight: '40px'
+                                }}
                               >
                                 <VideoCallIcon />
                               </IconButton>
                             </Tooltip>
                           )}
+                          
                           {canStartInterview(interview) && interview.status === 'Scheduled' && (
                             <Button
                               size="small"
@@ -485,19 +518,6 @@ const InterviewSchedule = () => {
                               onClick={() => handleStatusUpdate(interview._id, 'Completed')}
                             >
                               Complete
-                            </Button>
-                          )}
-                          {canSubmitFeedback(interview) && (
-                            <Button
-                              size="small"
-                              variant="contained"
-                              color="warning"
-                              onClick={() => {
-                                setSelectedInterview(interview);
-                                setShowFeedbackModal(true);
-                              }}
-                            >
-                              Feedback
                             </Button>
                           )}
                         </Box>

@@ -679,6 +679,41 @@ const ChatWindow = ({ chat, currentUser, onChatUpdate }) => {
             {error}
           </Alert>
         )}
+        <style jsx>{`
+        .typing-indicator {
+          display: flex;
+          align-items: center;
+          gap: 2px;
+        }
+        
+        .typing-indicator span {
+          height: 6px;
+          width: 6px;
+          background-color: #999;
+          border-radius: 50%;
+          display: inline-block;
+          animation: typing 1.4s infinite ease-in-out;
+        }
+        
+        .typing-indicator span:nth-child(1) {
+          animation-delay: -0.32s;
+        }
+        
+        .typing-indicator span:nth-child(2) {
+          animation-delay: -0.16s;
+        }
+        
+        @keyframes typing {
+          0%, 80%, 100% {
+            transform: scale(0.8);
+            opacity: 0.5;
+          }
+          40% {
+            transform: scale(1);
+            opacity: 1;
+          }
+        }
+      `}</style>
       </Paper>
     </Box>
   );

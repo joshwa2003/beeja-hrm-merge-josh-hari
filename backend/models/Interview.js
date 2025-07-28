@@ -89,6 +89,16 @@ const interviewSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   }],
+  interviewer: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: [true, 'Interviewer is required']
+  },
+  scheduledBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: [true, 'Scheduled by is required']
+  },
   
   // Interview Status
   status: {

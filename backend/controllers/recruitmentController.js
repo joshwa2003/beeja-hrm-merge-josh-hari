@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Job = require('../models/Job');
 const Application = require('../models/Application');
 const Interview = require('../models/Interview');
@@ -94,13 +95,47 @@ exports.getJob = async (req, res) => {
 // Create new job
 exports.createJob = async (req, res) => {
   try {
+    console.log('=== CREATE JOB DEBUG ===');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('User ID:', req.user.id);
+    
     const jobData = {
       ...req.body,
       createdBy: req.user.id
     };
     
+    // Clean up empty string values for ObjectId fields
+    if (jobData.team === '') {
+      delete jobData.team;
+    }
+    if (jobData.hiringManager === '') {
+      delete jobData.hiringManager;
+    }
+    if (jobData.recruiter === '') {
+      delete jobData.recruiter;
+    }
+    if (jobData.closingDate === '') {
+      delete jobData.closingDate;
+    }
+    
+    console.log('Job data to save:', JSON.stringify(jobData, null, 2));
+    
     const job = new Job(jobData);
+    
+    // Validate before saving
+    const validationError = job.validateSync();
+    if (validationError) {
+      console.log('Validation error:', validationError);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        error: validationError.message,
+        details: validationError.errors
+      });
+    }
+    
     await job.save();
+    console.log('Job saved successfully:', job._id);
     
     await job.populate([
       { path: 'department', select: 'name' },
@@ -117,10 +152,22 @@ exports.createJob = async (req, res) => {
     });
   } catch (error) {
     console.error('Error creating job:', error);
+    console.error('Error stack:', error.stack);
+    
+    // Handle specific MongoDB errors
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Job code already exists',
+        error: 'Duplicate job code'
+      });
+    }
+    
     res.status(400).json({
       success: false,
       message: 'Error creating job',
-      error: error.message
+      error: error.message,
+      details: error.errors || {}
     });
   }
 };
@@ -260,6 +307,55 @@ exports.getPublicJob = async (req, res) => {
 };
 
 // ==================== APPLICATION MANAGEMENT ====================
+
+// Get all applications across all jobs
+exports.getAllApplications = async (req, res) => {
+  try {
+    const { status, job, search, page = 1, limit = 10 } = req.query;
+    
+    let query = {};
+    
+    // Apply filters
+    if (status) query.status = status;
+    if (job) query.job = job;
+    if (search) {
+      query.$or = [
+        { firstName: { $regex: search, $options: 'i' } },
+        { lastName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { applicationNumber: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    const applications = await Application.find(query)
+      .populate('job', 'title code')
+      .populate('reviewedBy', 'firstName lastName')
+      .populate('rejectedBy', 'firstName lastName')
+      .populate('selectedBy', 'firstName lastName')
+      .sort({ submittedAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+    
+    const total = await Application.countDocuments(query);
+    
+    res.json({
+      success: true,
+      data: applications,
+      pagination: {
+        current: parseInt(page),
+        pages: Math.ceil(total / limit),
+        total
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching all applications:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching applications',
+      error: error.message
+    });
+  }
+};
 
 // Submit job application (public endpoint)
 exports.submitApplication = async (req, res) => {
@@ -456,14 +552,13 @@ exports.updateApplicationStatus = async (req, res) => {
   }
 };
 
-// ==================== INTERVIEW MANAGEMENT ====================
-
-// Schedule interview
-exports.scheduleInterview = async (req, res) => {
+// Send rejection email with custom reason
+exports.sendRejectionEmail = async (req, res) => {
   try {
-    const { applicationId } = req.params;
+    const { reason } = req.body;
+    const application = await Application.findById(req.params.id)
+      .populate('job', 'title code');
     
-    const application = await Application.findById(applicationId);
     if (!application) {
       return res.status(404).json({
         success: false,
@@ -471,26 +566,219 @@ exports.scheduleInterview = async (req, res) => {
       });
     }
     
+    // Check if there's an interview for this application to determine email type
+    const interview = await Interview.findOne({ 
+      application: application._id 
+    }).sort({ round: -1 }); // Get the latest interview round
+    
+    // Send appropriate rejection email
+    const emailService = require('../services/emailService');
+    let emailResult;
+    
+    if (interview) {
+      // Send interview rejection email if there was an interview
+      emailResult = await emailService.sendInterviewRejectionEmail(
+        application, 
+        application.job, 
+        interview, 
+        reason
+      );
+    } else {
+      // Send regular application rejection email
+      emailResult = await emailService.sendRejectionEmail(
+        application, 
+        application.job, 
+        reason
+      );
+    }
+    
+    if (!emailResult.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send rejection email',
+        error: emailResult.error
+      });
+    }
+    
+    // Update application status to Rejected
+    await application.updateStatus('Rejected', req.user.id, reason);
+    
+    res.json({
+      success: true,
+      message: 'Rejection email sent successfully and application status updated',
+      data: {
+        applicationId: application._id,
+        emailSent: true,
+        messageId: emailResult.messageId
+      }
+    });
+  } catch (error) {
+    console.error('Error sending rejection email:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error sending rejection email',
+      error: error.message
+    });
+  }
+};
+
+// ==================== INTERVIEW MANAGEMENT ====================
+
+// Schedule interview
+exports.scheduleInterview = async (req, res) => {
+  try {
+    console.log('=== SCHEDULE INTERVIEW DEBUG ===');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('Application ID:', req.params.applicationId);
+    console.log('User ID:', req.user.id);
+    
+    const { applicationId } = req.params;
+    
+    // Validate application exists
+    const application = await Application.findById(applicationId)
+      .populate('job', 'title code department');
+    if (!application) {
+      return res.status(404).json({
+        success: false,
+        message: 'Application not found'
+      });
+    }
+    
+    // Validate required fields
+    const requiredFields = ['type', 'scheduledDate', 'duration', 'mode', 'primaryInterviewer'];
+    const missingFields = requiredFields.filter(field => !req.body[field]);
+    
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Missing required fields: ${missingFields.join(', ')}`,
+        error: 'Validation failed'
+      });
+    }
+    
+    // Validate interviewer exists
+    const interviewer = await User.findById(req.body.primaryInterviewer);
+    if (!interviewer) {
+      return res.status(400).json({
+        success: false,
+        message: 'Selected interviewer not found',
+        error: 'Invalid interviewer'
+      });
+    }
+    
+    // Validate date is not in the past
+    const scheduledDateTime = new Date(req.body.scheduledDate);
+    const now = new Date();
+    
+    console.log('Backend date validation:');
+    console.log('Scheduled DateTime:', scheduledDateTime);
+    console.log('Current DateTime:', now);
+    console.log('Is scheduled date in past?', scheduledDateTime < now);
+    
+    // Add a small buffer (1 minute) to account for processing time
+    const oneMinuteAgo = new Date(now.getTime() - 60000);
+    if (scheduledDateTime < oneMinuteAgo) {
+      return res.status(400).json({
+        success: false,
+        message: 'Interview cannot be scheduled in the past',
+        error: 'Invalid date'
+      });
+    }
+    
+    // Validate mode-specific requirements
+    if (req.body.mode === 'Online' && !req.body.meetingLink) {
+      return res.status(400).json({
+        success: false,
+        message: 'Meeting link is required for online interviews',
+        error: 'Missing meeting link'
+      });
+    }
+    
+    if (req.body.mode === 'In-Person' && !req.body.location) {
+      return res.status(400).json({
+        success: false,
+        message: 'Location is required for in-person interviews',
+        error: 'Missing location'
+      });
+    }
+    
+    // Ensure both interviewer and primaryInterviewer are set (model requires both)
     const interviewData = {
       ...req.body,
       application: applicationId,
-      job: application.job,
-      scheduledBy: req.user.id
+      job: application.job._id,
+      scheduledBy: req.user.id,
+      interviewer: req.body.primaryInterviewer, // Ensure interviewer field is set
+      primaryInterviewer: req.body.primaryInterviewer // Ensure primaryInterviewer field is set
     };
     
+    console.log('Interview data to save:', JSON.stringify(interviewData, null, 2));
+    
     const interview = new Interview(interviewData);
+    
+    // Validate before saving
+    const validationError = interview.validateSync();
+    if (validationError) {
+      console.log('Validation error:', validationError);
+      const errorMessages = Object.values(validationError.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed: ' + errorMessages.join(', '),
+        error: validationError.message,
+        details: validationError.errors
+      });
+    }
+    
     await interview.save();
+    console.log('Interview saved successfully:', interview._id);
     
     // Update application status
     await application.updateStatus(`Interview Round ${interview.round}`, req.user.id);
     
     await interview.populate([
-      { path: 'application', select: 'firstName lastName email phoneNumber' },
-      { path: 'job', select: 'title code' },
+      { path: 'application', select: 'firstName lastName email phoneNumber yearsOfExperience technicalSkills appliedAt' },
+      { path: 'job', select: 'title code department' },
       { path: 'primaryInterviewer', select: 'firstName lastName email' },
       { path: 'additionalInterviewers', select: 'firstName lastName email' },
       { path: 'scheduledBy', select: 'firstName lastName' }
     ]);
+    
+    // Send email notifications
+    try {
+      const emailService = require('../services/emailService');
+      
+      // Send interview invitation to candidate
+      console.log('Sending interview invitation to candidate...');
+      await emailService.sendInterviewInvitation(interview, interview.application, interview.job);
+      
+      // Send notifications to all interviewers
+      console.log('Sending notifications to interviewers...');
+      const allInterviewerIds = req.body.allInterviewers || [interview.primaryInterviewer._id];
+      
+      // Fetch all interviewer details
+      const allInterviewers = await User.find({ 
+        _id: { $in: allInterviewerIds } 
+      }).select('firstName lastName email');
+      
+      if (allInterviewers.length > 0) {
+        const emailResult = await emailService.sendMultipleInterviewerNotifications(
+          interview, 
+          interview.application, 
+          interview.job, 
+          allInterviewers
+        );
+        
+        console.log(`Email notifications sent: ${emailResult.totalSent} successful, ${emailResult.totalFailed} failed`);
+        if (emailResult.totalFailed > 0) {
+          console.error('Some email notifications failed:', emailResult.results.filter(r => !r.success));
+        }
+      }
+      
+      console.log('Email notifications process completed');
+    } catch (emailError) {
+      console.error('Error sending email notifications:', emailError);
+      // Don't fail the request if email fails, just log the error
+    }
     
     res.status(201).json({
       success: true,
@@ -499,9 +787,39 @@ exports.scheduleInterview = async (req, res) => {
     });
   } catch (error) {
     console.error('Error scheduling interview:', error);
-    res.status(400).json({
+    console.error('Error stack:', error.stack);
+    
+    // Handle specific MongoDB errors
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Duplicate interview entry detected',
+        error: 'Interview already exists for this application and round'
+      });
+    }
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const errorMessages = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed: ' + errorMessages.join(', '),
+        error: error.message
+      });
+    }
+    
+    // Handle cast errors (invalid ObjectId)
+    if (error.name === 'CastError') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid ID format provided',
+        error: 'Invalid data format'
+      });
+    }
+    
+    res.status(500).json({
       success: false,
-      message: 'Error scheduling interview',
+      message: 'Internal server error while scheduling interview',
       error: error.message
     });
   }
@@ -529,7 +847,7 @@ exports.getInterviews = async (req, res) => {
     }
     
     const interviews = await Interview.find(query)
-      .populate('application', 'firstName lastName email phoneNumber applicationNumber')
+      .populate('application', 'firstName lastName email phoneNumber applicationNumber yearsOfExperience')
       .populate('job', 'title code')
       .populate('primaryInterviewer', 'firstName lastName email')
       .populate('additionalInterviewers', 'firstName lastName email')
@@ -537,14 +855,50 @@ exports.getInterviews = async (req, res) => {
       .sort({ scheduledDate: 1, scheduledTime: 1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
+
+    // Get feedback for each interview
+    const InterviewFeedback = require('../models/InterviewFeedback');
+    const interviewsWithFeedback = await Promise.all(
+      interviews.map(async (interview) => {
+        const feedback = await InterviewFeedback.findOne({ 
+          interview: interview._id 
+        }).populate('interviewer', 'firstName lastName');
+        
+        // Transform feedback data structure to match frontend expectations
+        let transformedFeedback = null;
+        if (feedback) {
+          transformedFeedback = {
+            ...feedback.toObject(),
+            // Map nested rating structure to flat structure expected by frontend
+            technicalRating: feedback.technicalSkills?.rating || null,
+            communicationRating: feedback.communication?.rating || null,
+            problemSolvingRating: feedback.problemSolving?.rating || null,
+            culturalFitRating: feedback.culturalFit?.rating || null,
+            // Keep original nested structure for backward compatibility
+            technicalSkills: feedback.technicalSkills,
+            communication: feedback.communication,
+            problemSolving: feedback.problemSolving,
+            culturalFit: feedback.culturalFit,
+            // Map other fields that might be expected
+            overallComments: feedback.detailedFeedback || feedback.interviewerNotes || '',
+            additionalNotes: feedback.interviewerNotes || ''
+          };
+        }
+        
+        return {
+          ...interview.toObject(),
+          feedback: transformedFeedback
+        };
+      })
+    );
     
     const total = await Interview.countDocuments(query);
     
     res.json({
       success: true,
-      data: interviews,
+      data: interviewsWithFeedback,
       pagination: {
-        current: page,
+        current: parseInt(page),
         pages: Math.ceil(total / limit),
         total
       }
@@ -563,19 +917,67 @@ exports.getInterviews = async (req, res) => {
 exports.getInterviewerInterviews = async (req, res) => {
   try {
     const { status, upcoming } = req.query;
-    let filters = {};
+    let query = {
+      $or: [
+        { primaryInterviewer: req.user.id },
+        { additionalInterviewers: req.user.id }
+      ]
+    };
     
-    if (status) filters.status = status;
+    if (status) query.status = status;
     if (upcoming === 'true') {
-      filters.scheduledDate = { $gte: new Date() };
-      filters.status = { $in: ['Scheduled', 'Confirmed'] };
+      query.scheduledDate = { $gte: new Date() };
+      query.status = { $in: ['Scheduled', 'Confirmed'] };
     }
     
-    const interviews = await Interview.getByInterviewer(req.user.id, filters);
+    const interviews = await Interview.find(query)
+      .populate('application', 'firstName lastName email phoneNumber applicationNumber yearsOfExperience')
+      .populate('job', 'title code')
+      .populate('primaryInterviewer', 'firstName lastName email')
+      .populate('additionalInterviewers', 'firstName lastName email')
+      .populate('scheduledBy', 'firstName lastName')
+      .sort({ scheduledDate: 1, scheduledTime: 1 });
+
+    // Get feedback for each interview
+    const InterviewFeedback = require('../models/InterviewFeedback');
+    const interviewsWithFeedback = await Promise.all(
+      interviews.map(async (interview) => {
+        const feedback = await InterviewFeedback.findOne({ 
+          interview: interview._id,
+          interviewer: req.user.id
+        });
+        
+        // Transform feedback data structure to match frontend expectations
+        let transformedFeedback = null;
+        if (feedback) {
+          transformedFeedback = {
+            ...feedback.toObject(),
+            // Map nested rating structure to flat structure expected by frontend
+            technicalRating: feedback.technicalSkills?.rating || null,
+            communicationRating: feedback.communication?.rating || null,
+            problemSolvingRating: feedback.problemSolving?.rating || null,
+            culturalFitRating: feedback.culturalFit?.rating || null,
+            // Keep original nested structure for backward compatibility
+            technicalSkills: feedback.technicalSkills,
+            communication: feedback.communication,
+            problemSolving: feedback.problemSolving,
+            culturalFit: feedback.culturalFit,
+            // Map other fields that might be expected
+            overallComments: feedback.detailedFeedback || feedback.interviewerNotes || '',
+            additionalNotes: feedback.interviewerNotes || ''
+          };
+        }
+        
+        return {
+          ...interview.toObject(),
+          feedback: transformedFeedback
+        };
+      })
+    );
     
     res.json({
       success: true,
-      data: interviews
+      data: interviewsWithFeedback
     });
   } catch (error) {
     console.error('Error fetching interviewer interviews:', error);
@@ -664,50 +1066,197 @@ exports.rescheduleInterview = async (req, res) => {
 // Submit interview feedback
 exports.submitFeedback = async (req, res) => {
   try {
+    console.log('=== SUBMIT FEEDBACK DEBUG ===');
+    console.log('Interview ID:', req.params.interviewId);
+    console.log('User ID:', req.user.id);
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    
     const { interviewId } = req.params;
     
     const interview = await Interview.findById(interviewId);
     if (!interview) {
+      console.log('Interview not found');
       return res.status(404).json({
         success: false,
         message: 'Interview not found'
       });
     }
     
+    console.log('Interview found:', interview._id);
+    console.log('Primary interviewer:', interview.primaryInterviewer);
+    console.log('Additional interviewers:', interview.additionalInterviewers);
+    
     // Check if interviewer is authorized
     const isAuthorized = interview.primaryInterviewer.toString() === req.user.id ||
                         interview.additionalInterviewers.some(id => id.toString() === req.user.id);
     
     if (!isAuthorized) {
+      console.log('User not authorized to provide feedback');
       return res.status(403).json({
         success: false,
         message: 'You are not authorized to provide feedback for this interview'
       });
     }
     
-    // Check if feedback already exists
+    // Check if feedback already exists (for new submissions only)
     const existingFeedback = await InterviewFeedback.findOne({
       interview: interviewId,
       interviewer: req.user.id
     });
     
-    if (existingFeedback) {
-      return res.status(409).json({
+    console.log('Existing feedback found:', !!existingFeedback);
+    
+    // Handle both data structures: nested objects (from recruitment InterviewSchedule) and flat properties (from interviewer InterviewSchedule)
+    const {
+      // Flat structure fields (from interviewer component)
+      technicalRating,
+      communicationRating,
+      problemSolvingRating,
+      culturalFitRating,
+      overallRating,
+      recommendation,
+      overallComments,
+      additionalNotes,
+      strengths,
+      weaknesses,
+      // Nested structure fields (from recruitment component)
+      technicalSkills,
+      communication,
+      problemSolving,
+      culturalFit,
+      detailedFeedback,
+      interviewerNotes,
+      // Other fields
+      ...otherFields
+    } = req.body;
+
+    console.log('Extracted fields:');
+    console.log('- technicalRating:', technicalRating);
+    console.log('- communicationRating:', communicationRating);
+    console.log('- problemSolvingRating:', problemSolvingRating);
+    console.log('- culturalFitRating:', culturalFitRating);
+    console.log('- technicalSkills:', technicalSkills);
+    console.log('- communication:', communication);
+    console.log('- problemSolving:', problemSolving);
+    console.log('- culturalFit:', culturalFit);
+    console.log('- overallRating:', overallRating);
+    console.log('- recommendation:', recommendation);
+    console.log('- overallComments length:', overallComments?.length);
+    console.log('- detailedFeedback length:', detailedFeedback?.length);
+
+    // Determine which data structure is being used and extract the comments field
+    const commentsField = detailedFeedback || overallComments;
+    const notesField = interviewerNotes || additionalNotes;
+
+    // Validate required fields
+    if (!overallRating || overallRating === 0) {
+      console.log('Overall rating validation failed');
+      return res.status(400).json({
         success: false,
-        message: 'Feedback already submitted for this interview'
+        message: 'Overall rating is required and must be greater than 0'
       });
     }
-    
+
+    if (!recommendation || recommendation.trim() === '') {
+      console.log('Recommendation validation failed');
+      return res.status(400).json({
+        success: false,
+        message: 'Recommendation is required'
+      });
+    }
+
+    if (!commentsField || commentsField.trim() === '') {
+      console.log('Overall comments validation failed');
+      return res.status(400).json({
+        success: false,
+        message: 'Overall comments are required'
+      });
+    }
+
     const feedbackData = {
-      ...req.body,
       interview: interviewId,
       application: interview.application,
       job: interview.job,
-      interviewer: req.user.id
+      interviewer: req.user.id,
+      // Required fields
+      overallRating: parseInt(overallRating),
+      recommendation: recommendation.trim(),
+      detailedFeedback: commentsField.trim(),
+      // Optional fields
+      strengths: Array.isArray(strengths) ? strengths.filter(s => s && s.trim()) : [],
+      weaknesses: Array.isArray(weaknesses) ? weaknesses.filter(w => w && w.trim()) : [],
+      interviewerNotes: notesField ? notesField.trim() : '',
+      // Copy other fields that might be present
+      ...otherFields
     };
+
+    // Handle nested rating objects (from recruitment component) or create them from flat properties (from interviewer component)
+    if (technicalSkills && technicalSkills.rating) {
+      feedbackData.technicalSkills = {
+        rating: parseInt(technicalSkills.rating),
+        comments: technicalSkills.comments || ''
+      };
+    } else if (technicalRating && technicalRating > 0) {
+      feedbackData.technicalSkills = {
+        rating: parseInt(technicalRating),
+        comments: ''
+      };
+    }
+
+    if (communication && communication.rating) {
+      feedbackData.communication = {
+        rating: parseInt(communication.rating),
+        comments: communication.comments || ''
+      };
+    } else if (communicationRating && communicationRating > 0) {
+      feedbackData.communication = {
+        rating: parseInt(communicationRating),
+        comments: ''
+      };
+    }
+
+    if (problemSolving && problemSolving.rating) {
+      feedbackData.problemSolving = {
+        rating: parseInt(problemSolving.rating),
+        comments: problemSolving.comments || ''
+      };
+    } else if (problemSolvingRating && problemSolvingRating > 0) {
+      feedbackData.problemSolving = {
+        rating: parseInt(problemSolvingRating),
+        comments: ''
+      };
+    }
+
+    if (culturalFit && culturalFit.rating) {
+      feedbackData.culturalFit = {
+        rating: parseInt(culturalFit.rating),
+        comments: culturalFit.comments || ''
+      };
+    } else if (culturalFitRating && culturalFitRating > 0) {
+      feedbackData.culturalFit = {
+        rating: parseInt(culturalFitRating),
+        comments: ''
+      };
+    }
     
-    const feedback = new InterviewFeedback(feedbackData);
-    await feedback.submit();
+    console.log('Feedback data to save:', JSON.stringify(feedbackData, null, 2));
+    
+    let feedback;
+    
+    if (existingFeedback) {
+      // Update existing feedback
+      console.log('Updating existing feedback');
+      Object.assign(existingFeedback, feedbackData);
+      feedback = existingFeedback;
+      await feedback.submit();
+    } else {
+      // Create new feedback
+      console.log('Creating new feedback');
+      feedback = new InterviewFeedback(feedbackData);
+      await feedback.submit();
+    }
+    
+    console.log('Feedback saved successfully:', feedback._id);
     
     await feedback.populate([
       { path: 'interview', select: 'round title type scheduledDate' },
@@ -716,13 +1265,42 @@ exports.submitFeedback = async (req, res) => {
       { path: 'interviewer', select: 'firstName lastName designation' }
     ]);
     
-    res.status(201).json({
+    console.log('Feedback populated and ready to return');
+    
+    res.status(existingFeedback ? 200 : 201).json({
       success: true,
-      message: 'Feedback submitted successfully',
+      message: existingFeedback ? 'Feedback updated successfully' : 'Feedback submitted successfully',
       data: feedback
     });
   } catch (error) {
     console.error('Error submitting feedback:', error);
+    console.error('Error stack:', error.stack);
+    
+    // Handle validation errors specifically
+    if (error.name === 'ValidationError') {
+      const errorMessages = Object.values(error.errors).map(err => err.message);
+      console.log('Validation errors:', errorMessages);
+      console.log('Full validation error details:', JSON.stringify(error.errors, null, 2));
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed: ' + errorMessages.join(', '),
+        error: error.message,
+        details: error.errors
+      });
+    }
+    
+    // Handle cast errors (invalid data types)
+    if (error.name === 'CastError') {
+      console.log('Cast error details:', error);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid data format provided',
+        error: 'Data type validation failed',
+        field: error.path,
+        value: error.value
+      });
+    }
+    
     res.status(400).json({
       success: false,
       message: 'Error submitting feedback',
@@ -781,6 +1359,11 @@ exports.getInterviewerFeedback = async (req, res) => {
 // Generate offer letter
 exports.generateOffer = async (req, res) => {
   try {
+    console.log('=== GENERATE OFFER DEBUG ===');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('Application ID:', req.params.applicationId);
+    console.log('User ID:', req.user.id);
+    
     const { applicationId } = req.params;
     
     const application = await Application.findById(applicationId)
@@ -809,8 +1392,13 @@ exports.generateOffer = async (req, res) => {
       });
     }
     
+    // Map frontend data to model structure
+    const salaryAmount = parseInt(req.body.salary) || 0;
+    const basicSalary = Math.floor(salaryAmount * 0.6); // 60% basic
+    const hra = Math.floor(salaryAmount * 0.2); // 20% HRA
+    const allowances = salaryAmount - basicSalary - hra; // Remaining as allowances
+    
     const offerData = {
-      ...req.body,
       application: applicationId,
       job: application.job._id,
       candidate: {
@@ -819,11 +1407,59 @@ exports.generateOffer = async (req, res) => {
         email: application.email,
         phoneNumber: application.phoneNumber
       },
-      generatedBy: req.user.id
+      designation: req.body.position || application.job.title,
+      department: application.job.department,
+      workLocation: req.body.workLocation || 'Office',
+      employmentType: 'Full-time',
+      workMode: 'On-site',
+      salary: {
+        basic: basicSalary,
+        hra: hra,
+        allowances: {
+          transport: Math.floor(allowances * 0.3),
+          medical: Math.floor(allowances * 0.2),
+          special: Math.floor(allowances * 0.3),
+          other: allowances - Math.floor(allowances * 0.8)
+        },
+        totalCTC: salaryAmount
+      },
+      proposedJoiningDate: new Date(req.body.joiningDate),
+      validUntil: new Date(req.body.validUntil),
+      benefits: {
+        healthInsurance: { included: true },
+        providentFund: { included: true },
+        gratuity: { included: true },
+        leavePolicy: {
+          casual: 12,
+          sick: 12,
+          earned: 21
+        },
+        otherBenefits: req.body.benefits ? [req.body.benefits] : []
+      },
+      specialTerms: req.body.additionalTerms ? [req.body.additionalTerms] : [],
+      generatedBy: req.user.id,
+      status: 'Draft'
     };
     
+    console.log('Offer data to save:', JSON.stringify(offerData, null, 2));
+    
     const offer = new Offer(offerData);
+    
+    // Validate before saving
+    const validationError = offer.validateSync();
+    if (validationError) {
+      console.log('Validation error:', validationError);
+      const errorMessages = Object.values(validationError.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed: ' + errorMessages.join(', '),
+        error: validationError.message,
+        details: validationError.errors
+      });
+    }
+    
     await offer.save();
+    console.log('Offer saved successfully:', offer._id);
     
     await offer.populate([
       { path: 'application', select: 'firstName lastName applicationNumber' },
@@ -839,9 +1475,39 @@ exports.generateOffer = async (req, res) => {
     });
   } catch (error) {
     console.error('Error generating offer:', error);
-    res.status(400).json({
+    console.error('Error stack:', error.stack);
+    
+    // Handle specific MongoDB errors
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Duplicate offer detected',
+        error: 'Offer already exists for this application'
+      });
+    }
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const errorMessages = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed: ' + errorMessages.join(', '),
+        error: error.message
+      });
+    }
+    
+    // Handle cast errors (invalid ObjectId)
+    if (error.name === 'CastError') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid ID format provided',
+        error: 'Invalid data format'
+      });
+    }
+    
+    res.status(500).json({
       success: false,
-      message: 'Error generating offer',
+      message: 'Internal server error while generating offer',
       error: error.message
     });
   }
@@ -850,28 +1516,50 @@ exports.generateOffer = async (req, res) => {
 // Get offers
 exports.getOffers = async (req, res) => {
   try {
-    const { status, page = 1, limit = 10 } = req.query;
+    console.log('=== GET OFFERS DEBUG ===');
+    console.log('Query params:', req.query);
     
-    let filters = {};
-    if (status) filters.status = status;
+    const { status, search, page = 1, limit = 10 } = req.query;
     
-    const offers = await Offer.getByStatus(status || {}, filters)
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+    let query = {};
+    if (status && status !== '') query.status = status;
+    if (search && search !== '') {
+      query.$or = [
+        { 'candidate.firstName': { $regex: search, $options: 'i' } },
+        { 'candidate.lastName': { $regex: search, $options: 'i' } },
+        { 'candidate.email': { $regex: search, $options: 'i' } },
+        { designation: { $regex: search, $options: 'i' } }
+      ];
+    }
     
-    const total = await Offer.countDocuments(filters);
+    console.log('Query:', JSON.stringify(query, null, 2));
+    
+    const offers = await Offer.find(query)
+      .populate('application', 'firstName lastName applicationNumber')
+      .populate('job', 'title code')
+      .populate('department', 'name')
+      .populate('generatedBy', 'firstName lastName')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+    
+    const total = await Offer.countDocuments(query);
+    
+    console.log('Found offers:', offers.length);
+    console.log('Total offers:', total);
     
     res.json({
       success: true,
       data: offers,
       pagination: {
-        current: page,
-        pages: Math.ceil(total / limit),
+        current: parseInt(page),
+        pages: Math.ceil(total / parseInt(limit)),
         total
       }
     });
   } catch (error) {
     console.error('Error fetching offers:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Error fetching offers',
@@ -883,7 +1571,9 @@ exports.getOffers = async (req, res) => {
 // Send offer
 exports.sendOffer = async (req, res) => {
   try {
-    const offer = await Offer.findById(req.params.id);
+    const offer = await Offer.findById(req.params.id)
+      .populate('application', 'firstName lastName email phoneNumber')
+      .populate('job', 'title code');
     
     if (!offer) {
       return res.status(404).json({
@@ -892,7 +1582,23 @@ exports.sendOffer = async (req, res) => {
       });
     }
     
-    await offer.sendOffer(req.user.id);
+    // Update offer status to Sent
+    offer.status = 'Sent';
+    offer.sentAt = new Date();
+    offer.sentBy = req.user.id;
+    await offer.save();
+    
+    // Send email with accept/reject buttons
+    const emailService = require('../services/emailService');
+    const emailResult = await emailService.sendOfferLetter(offer, offer.application, offer.job);
+    
+    if (!emailResult.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send offer email',
+        error: emailResult.error
+      });
+    }
     
     res.json({
       success: true,
@@ -912,47 +1618,72 @@ exports.sendOffer = async (req, res) => {
 // Get public offer (for candidate response)
 exports.getPublicOffer = async (req, res) => {
   try {
+    console.log('=== GET PUBLIC OFFER DEBUG ===');
+    console.log('Token (Offer ID):', req.params.token);
+    
     const { token } = req.params;
     
-    // In a real implementation, you would decode the token to get the offer ID
-    // For now, we'll assume the token is the offer ID
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(token)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid offer ID format'
+      });
+    }
+    
+    // Find the offer
     const offer = await Offer.findById(token)
       .populate('job', 'title code')
       .populate('department', 'name')
       .select('-generatedBy -sentBy -lastUpdatedBy');
     
+    console.log('Found offer:', offer ? 'Yes' : 'No');
+    if (offer) {
+      console.log('Offer status:', offer.status);
+      console.log('Offer valid until:', offer.validUntil);
+      console.log('Is expired:', offer.isExpired);
+    }
+    
     if (!offer) {
       return res.status(404).json({
         success: false,
-        message: 'Offer not found'
+        message: 'Offer letter not found'
       });
     }
     
-    if (offer.status !== 'Sent' && offer.status !== 'Viewed') {
+    // Check if offer is in a valid status for candidate response
+    const validStatuses = ['Draft', 'Generated', 'Sent', 'Viewed'];
+    if (!validStatuses.includes(offer.status)) {
+      console.log('Invalid status for response:', offer.status);
       return res.status(410).json({
         success: false,
-        message: 'Offer is no longer available'
+        message: 'Offer is no longer available for response'
       });
     }
     
+    // Check if offer has expired
     if (offer.isExpired) {
+      console.log('Offer has expired');
       return res.status(410).json({
         success: false,
         message: 'Offer has expired'
       });
     }
     
-    // Mark as viewed if first time
+    // Mark as viewed if first time accessing
     if (offer.status === 'Sent') {
+      console.log('Marking offer as viewed');
       await offer.markAsViewed();
     }
     
+    console.log('Returning offer data successfully');
     res.json({
       success: true,
       data: offer
     });
   } catch (error) {
     console.error('Error fetching public offer:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Error fetching offer',
@@ -964,10 +1695,28 @@ exports.getPublicOffer = async (req, res) => {
 // Respond to offer (public endpoint)
 exports.respondToOffer = async (req, res) => {
   try {
+    console.log('=== RESPOND TO OFFER DEBUG ===');
+    console.log('Token (Offer ID):', req.params.token);
+    console.log('Response:', req.body.response);
+    
     const { token } = req.params;
     const { response, comments, negotiationPoints } = req.body;
     
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(token)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid offer ID format'
+      });
+    }
+    
     const offer = await Offer.findById(token);
+    
+    console.log('Found offer:', offer ? 'Yes' : 'No');
+    if (offer) {
+      console.log('Offer status:', offer.status);
+      console.log('Is expired:', offer.isExpired);
+    }
     
     if (!offer) {
       return res.status(404).json({
@@ -976,12 +1725,25 @@ exports.respondToOffer = async (req, res) => {
       });
     }
     
+    // Check if offer is in a valid status for response
+    const validStatuses = ['Draft', 'Generated', 'Sent', 'Viewed'];
+    if (!validStatuses.includes(offer.status)) {
+      console.log('Invalid status for response:', offer.status);
+      return res.status(410).json({
+        success: false,
+        message: 'Offer is no longer available for response'
+      });
+    }
+    
     if (offer.isExpired) {
+      console.log('Offer has expired');
       return res.status(410).json({
         success: false,
         message: 'Offer has expired'
       });
     }
+    
+    console.log('Processing response:', response);
     
     switch (response) {
       case 'accept':
@@ -991,6 +1753,7 @@ exports.respondToOffer = async (req, res) => {
           status: 'Offer Accepted',
           lastUpdatedBy: offer.generatedBy
         });
+        console.log('Offer accepted successfully');
         break;
       case 'reject':
         await offer.rejectOffer(comments);
@@ -999,10 +1762,17 @@ exports.respondToOffer = async (req, res) => {
           status: 'Offer Rejected',
           lastUpdatedBy: offer.generatedBy
         });
+        console.log('Offer rejected successfully');
         break;
       case 'negotiate':
         await offer.requestNegotiation(negotiationPoints, comments);
+        console.log('Negotiation requested successfully');
         break;
+      default:
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid response type'
+        });
     }
     
     res.json({
@@ -1012,7 +1782,8 @@ exports.respondToOffer = async (req, res) => {
     });
   } catch (error) {
     console.error('Error responding to offer:', error);
-    res.status(400).json({
+    console.error('Error stack:', error.stack);
+    res.status(500).json({
       success: false,
       message: 'Error responding to offer',
       error: error.message
@@ -1177,14 +1948,17 @@ exports.getAnalytics = async (req, res) => {
 
 // ==================== UTILITY FUNCTIONS ====================
 
-// Get all interviewers (non-employee users)
+// Get all interviewers (all members except regular employees)
 exports.getInterviewers = async (req, res) => {
   try {
+    // Include all roles except regular Employee
     const interviewers = await User.find({
       role: { $ne: 'Employee' },
       isActive: true
     })
-      .select('firstName lastName email designation role')
+      .select('firstName lastName email designation role team department')
+      .populate('team', 'name')
+      .populate('department', 'name')
       .sort({ firstName: 1 });
 
     res.json({
@@ -1201,33 +1975,172 @@ exports.getInterviewers = async (req, res) => {
   }
 };
 
+// Get departments for job creation
+exports.getDepartments = async (req, res) => {
+  try {
+    const Department = require('../models/Department');
+    const departments = await Department.find({ isActive: true })
+      .select('name code description')
+      .sort({ name: 1 });
+
+    res.json({
+      success: true,
+      data: departments
+    });
+  } catch (error) {
+    console.error('Error fetching departments:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching departments',
+      error: error.message
+    });
+  }
+};
+
+// Get teams by department
+exports.getTeamsByDepartment = async (req, res) => {
+  try {
+    const { departmentId } = req.params;
+    const teams = await Team.find({ 
+      department: departmentId,
+      isActive: true 
+    })
+      .select('name description')
+      .sort({ name: 1 });
+
+    res.json({
+      success: true,
+      data: teams
+    });
+  } catch (error) {
+    console.error('Error fetching teams:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching teams',
+      error: error.message
+    });
+  }
+};
+
+// Get hiring managers and recruiters for job creation
+exports.getHiringManagers = async (req, res) => {
+  try {
+    const hiringManagers = await User.find({
+      role: { $in: ['HR Manager', 'HR BP', 'Team Manager', 'Manager'] },
+      isActive: true
+    })
+      .select('firstName lastName email designation role')
+      .sort({ firstName: 1 });
+
+    res.json({
+      success: true,
+      data: hiringManagers
+    });
+  } catch (error) {
+    console.error('Error fetching hiring managers:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching hiring managers',
+      error: error.message
+    });
+  }
+};
+
 // Download resume
 exports.downloadResume = async (req, res) => {
   try {
-    const application = await Application.findById(req.params.applicationId);
+    console.log('=== DOWNLOAD RESUME DEBUG ===');
+    console.log('Application ID:', req.params.applicationId);
     
-    if (!application || !application.resume) {
+    const application = await Application.findById(req.params.applicationId);
+    console.log('Application found:', !!application);
+    
+    if (!application) {
+      console.log('Application not found in database');
       return res.status(404).json({
         success: false,
-        message: 'Resume not found'
+        message: 'Application not found'
+      });
+    }
+    
+    if (!application.resume) {
+      console.log('No resume attached to application');
+      return res.status(404).json({
+        success: false,
+        message: 'No resume found for this application'
       });
     }
 
-    const filePath = path.join(__dirname, '..', application.resume.path);
+    console.log('Resume data:', JSON.stringify(application.resume, null, 2));
     
-    // Check if file exists
-    try {
-      await fs.access(filePath);
-    } catch (error) {
+    // Check if we have filename or path
+    if (!application.resume.filename && !application.resume.path) {
+      console.log('No filename or path found in resume data');
+      return res.status(404).json({
+        success: false,
+        message: 'Resume file information is incomplete'
+      });
+    }
+    
+    // Try multiple path combinations
+    const possiblePaths = [];
+    
+    // If we have a path field, use it
+    if (application.resume.path) {
+      possiblePaths.push(
+        path.join(__dirname, '..', application.resume.path),
+        path.join(__dirname, application.resume.path),
+        application.resume.path
+      );
+    }
+    
+    // If we have a filename field, construct paths
+    if (application.resume.filename) {
+      possiblePaths.push(
+        path.join(__dirname, '..', 'uploads', 'resumes', application.resume.filename)
+      );
+    }
+    
+    // Fallback: try to construct filename from originalName and application ID
+    if (application.resume.originalName) {
+      const fileExtension = path.extname(application.resume.originalName);
+      const constructedFilename = `resume_${Date.now()}${fileExtension}`;
+      possiblePaths.push(
+        path.join(__dirname, '..', 'uploads', 'resumes', constructedFilename)
+      );
+    }
+    
+    let filePath = null;
+    let fileExists = false;
+    
+    for (const testPath of possiblePaths) {
+      console.log('Testing path:', testPath);
+      try {
+        await fs.access(testPath);
+        filePath = testPath;
+        fileExists = true;
+        console.log('File found at:', testPath);
+        break;
+      } catch (error) {
+        console.log('File not found at:', testPath);
+      }
+    }
+    
+    if (!fileExists) {
+      console.log('Resume file not found at any expected location');
       return res.status(404).json({
         success: false,
         message: 'Resume file not found on server'
       });
     }
 
-    res.download(filePath, application.resume.originalName);
+    console.log('Downloading file from:', filePath);
+    console.log('Original filename:', application.resume.originalName);
+    
+    res.download(filePath, application.resume.originalName || 'resume.pdf');
   } catch (error) {
     console.error('Error downloading resume:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Error downloading resume',
@@ -1240,10 +2153,23 @@ exports.downloadResume = async (req, res) => {
 exports.addToUserManagement = async (req, res) => {
   try {
     const { offerId } = req.params;
-    const { role = 'Employee', department, team, reportingManager } = req.body;
+    const { 
+      firstName, 
+      lastName, 
+      email, 
+      role = 'Employee', 
+      department, 
+      employeeId,
+      phoneNumber,
+      designation,
+      joiningDate,
+      isActive = true,
+      teamId 
+    } = req.body;
     
     const offer = await Offer.findById(offerId)
-      .populate('application');
+      .populate('application')
+      .populate('department', 'name');
     
     if (!offer) {
       return res.status(404).json({
@@ -1267,40 +2193,65 @@ exports.addToUserManagement = async (req, res) => {
     }
     
     // Generate temporary password
-    const tempPassword = Math.random().toString(36).slice(-8);
+    const tempPassword = Math.random().toString(36).slice(-8) + Math.random().toString(36).slice(-8);
     
-    // Create user account
+    // Create user account with provided data
     const userData = {
-      email: offer.candidate.email,
+      email: email || offer.candidate.email,
       password: tempPassword,
-      firstName: offer.candidate.firstName,
-      lastName: offer.candidate.lastName,
-      phoneNumber: offer.candidate.phoneNumber,
+      firstName: firstName || offer.candidate.firstName,
+      lastName: lastName || offer.candidate.lastName,
+      phoneNumber: phoneNumber || offer.candidate.phoneNumber,
       role: role,
       department: department || offer.department,
-      team: team || offer.team,
-      reportingManager: reportingManager || offer.reportingManager,
-      designation: offer.designation,
-      joiningDate: offer.actualJoiningDate || offer.proposedJoiningDate,
+      employeeId: employeeId,
+      designation: designation || offer.designation,
+      joiningDate: joiningDate || offer.actualJoiningDate || offer.proposedJoiningDate,
+      isActive: isActive,
       createdBy: req.user.id
     };
+
+    // Add team assignment if provided
+    if (teamId) {
+      userData.teamId = teamId;
+    }
     
     const user = new User(userData);
     await user.save();
+
+    // Populate user data for email
+    await user.populate('department', 'name');
     
     // Update offer
     offer.userAccountCreated = true;
     offer.createdUserId = user._id;
     offer.onboardingInitiated = true;
     await offer.save();
+
+    // Send welcome email with credentials
+    try {
+      const emailService = require('../services/emailService');
+      const emailResult = await emailService.sendWelcomeEmailWithCredentials(user, tempPassword, offer);
+      
+      if (!emailResult.success) {
+        console.error('Failed to send welcome email:', emailResult.error);
+        // Don't fail the request if email fails, just log the error
+      } else {
+        console.log('Welcome email sent successfully to:', user.email);
+      }
+    } catch (emailError) {
+      console.error('Error sending welcome email:', emailError);
+      // Don't fail the request if email fails
+    }
     
     res.json({
       success: true,
-      message: 'User account created successfully',
+      message: 'User account created successfully and welcome email sent',
       data: {
         userId: user._id,
         employeeId: user.employeeId,
-        tempPassword: tempPassword
+        tempPassword: tempPassword,
+        emailSent: true
       }
     });
   } catch (error) {

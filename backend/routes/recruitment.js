@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { auth } = require('../middleware/auth');
+const { auth, roleAccess } = require('../middleware/auth');
 const { resumeUpload } = require('../middleware/upload');
 const recruitmentController = require('../controllers/recruitmentController');
 
@@ -9,36 +9,42 @@ const recruitmentController = require('../controllers/recruitmentController');
 // Get all jobs (HR Manager only)
 router.get('/jobs', 
   auth, 
+  roleAccess(['HR Manager']),
   recruitmentController.getJobs
 );
 
 // Get single job (HR Manager only)
 router.get('/jobs/:id', 
   auth, 
+  roleAccess(['HR Manager']),
   recruitmentController.getJob
 );
 
 // Create new job (HR Manager only)
 router.post('/jobs', 
   auth, 
+  roleAccess(['HR Manager']),
   recruitmentController.createJob
 );
 
 // Update job (HR Manager only)
 router.put('/jobs/:id', 
   auth, 
+  roleAccess(['HR Manager']),
   recruitmentController.updateJob
 );
 
 // Publish job (HR Manager only)
 router.patch('/jobs/:id/publish', 
   auth, 
+  roleAccess(['HR Manager']),
   recruitmentController.publishJob
 );
 
 // Close job (HR Manager only)
 router.patch('/jobs/:id/close', 
   auth, 
+  roleAccess(['HR Manager']),
   recruitmentController.closeJob
 );
 
@@ -56,6 +62,13 @@ router.post('/public/jobs/:jobId/apply',
 );
 
 // ==================== APPLICATION MANAGEMENT ROUTES ====================
+
+// Get all applications (HR Manager only)
+router.get('/applications', 
+  auth, 
+  roleAccess(['HR Manager']),
+  recruitmentController.getAllApplications
+);
 
 // Get applications for a job (HR Manager only)
 router.get('/jobs/:jobId/applications', 
@@ -75,6 +88,13 @@ router.patch('/applications/:id/status',
   recruitmentController.updateApplicationStatus
 );
 
+// Send rejection email with reason (HR Manager only)
+router.post('/applications/:id/reject', 
+  auth, 
+  roleAccess(['HR Manager']),
+  recruitmentController.sendRejectionEmail
+);
+
 // Download resume (HR Manager only)
 router.get('/applications/:applicationId/resume', 
   auth, 
@@ -83,9 +103,10 @@ router.get('/applications/:applicationId/resume',
 
 // ==================== INTERVIEW MANAGEMENT ROUTES ====================
 
-// Schedule interview (HR Manager only)
+// Schedule interview (HR roles only)
 router.post('/applications/:applicationId/interviews', 
   auth, 
+  roleAccess(['Admin', 'Vice President', 'HR BP', 'HR Manager', 'HR Executive']),
   recruitmentController.scheduleInterview
 );
 
@@ -189,10 +210,32 @@ router.get('/analytics',
 
 // ==================== UTILITY ROUTES ====================
 
-// Get all interviewers (HR Manager only)
+// Get all interviewers (HR roles only)
 router.get('/interviewers', 
   auth, 
+  roleAccess(['Admin', 'Vice President', 'HR BP', 'HR Manager', 'HR Executive']),
   recruitmentController.getInterviewers
+);
+
+// Get departments for job creation (HR Manager only)
+router.get('/departments', 
+  auth, 
+  roleAccess(['HR Manager']),
+  recruitmentController.getDepartments
+);
+
+// Get teams by department (HR Manager only)
+router.get('/teams/:departmentId', 
+  auth, 
+  roleAccess(['HR Manager']),
+  recruitmentController.getTeamsByDepartment
+);
+
+// Get hiring managers for job creation (HR Manager only)
+router.get('/hiring-managers', 
+  auth, 
+  roleAccess(['HR Manager']),
+  recruitmentController.getHiringManagers
 );
 
 module.exports = router;

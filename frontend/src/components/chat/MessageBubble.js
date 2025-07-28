@@ -32,17 +32,27 @@ const MessageBubble = ({ message, currentUser, isLastMessage, showAvatar }) => {
   const [downloading, setDownloading] = useState(false);
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [selectedAttachment, setSelectedAttachment] = useState(null);
-  const isOwnMessage = message.sender._id === currentUser._id;
+  
+  // Enhanced debugging and comparison logic
+  const senderId = message.sender?._id || message.sender?.id;
+  const currentUserId = currentUser?._id || currentUser?.id;
+  const isOwnMessage = senderId === currentUserId;
   const theme = useTheme();
 
-  // Debug logging
-  console.log('MessageBubble - Message data:', {
-    id: message._id,
-    content: message.content,
-    attachments: message.attachments,
-    messageType: message.messageType,
-    hasAttachments: message.attachments && message.attachments.length > 0,
-    attachmentCount: message.attachments ? message.attachments.length : 0
+  // Comprehensive debug logging
+  console.log('🔍 MessageBubble - Alignment Debug:', {
+    messageId: message._id,
+    content: message.content?.substring(0, 50) + '...',
+    senderId: senderId,
+    currentUserId: currentUserId,
+    senderName: message.sender ? `${message.sender.firstName} ${message.sender.lastName}` : 'Unknown',
+    currentUserName: currentUser ? `${currentUser.firstName} ${currentUser.lastName}` : 'Unknown',
+    isOwnMessage: isOwnMessage,
+    shouldBeOnRight: isOwnMessage ? '✅ YES - RIGHT SIDE' : '❌ NO - LEFT SIDE',
+    messageObject: {
+      sender: message.sender,
+      currentUser: currentUser
+    }
   });
 
   // Additional debug for attachments

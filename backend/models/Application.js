@@ -35,7 +35,6 @@ const applicationSchema = new mongoose.Schema({
     match: [/^\+?[\d\s-()]+$/, 'Please enter a valid phone number']
   },
   
-  // Professional Information
   yearsOfExperience: {
     type: Number,
     required: [true, 'Years of experience is required'],
@@ -214,6 +213,28 @@ const applicationSchema = new mongoose.Schema({
   lastUpdatedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
+  },
+  // Offer Letter Reference
+  offerLetter: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'OfferLetter'
+  },
+  
+  // Source tracking
+  applicationSource: {
+    type: String,
+    enum: ['Direct Application', 'Referral', 'Job Portal', 'Social Media', 'Other'],
+    default: 'Direct Application'
+  },
+  referredBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  
+  // System fields
+  isActive: {
+    type: Boolean,
+    default: true
   }
 }, {
   timestamps: true
@@ -223,9 +244,8 @@ const applicationSchema = new mongoose.Schema({
 applicationSchema.index({ job: 1, status: 1 });
 applicationSchema.index({ email: 1 });
 applicationSchema.index({ status: 1 });
-applicationSchema.index({ submittedAt: -1 });
-applicationSchema.index({ applicationNumber: 1 });
-applicationSchema.index({ firstName: 'text', lastName: 'text', email: 'text' });
+applicationSchema.index({ appliedAt: -1 });
+applicationSchema.index({ job: 1, appliedAt: -1 });
 
 // Virtual for full name
 applicationSchema.virtual('fullName').get(function() {
@@ -314,6 +334,15 @@ applicationSchema.statics.getByStatus = function(status, filters = {}) {
     .populate('job', 'title code department')
     .populate('reviewedBy', 'firstName lastName')
     .sort({ submittedAt: -1 });
+};
+
+// Static method to check if user has already applied
+applicationSchema.statics.hasApplied = function(email, jobId) {
+  return this.findOne({
+    email: email.toLowerCase(),
+    job: jobId,
+    isActive: true
+  });
 };
 
 // Transform output

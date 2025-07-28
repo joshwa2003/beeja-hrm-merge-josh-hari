@@ -99,8 +99,7 @@ const jobSchema = new mongoose.Schema({
   },
   hiringManager: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: [true, 'Hiring manager is required']
+    ref: 'User'
   },
   recruiter: {
     type: mongoose.Schema.Types.ObjectId,
@@ -109,15 +108,10 @@ const jobSchema = new mongoose.Schema({
   interviewProcess: [{
     stage: {
       type: String,
-      enum: ['Screening', 'Technical', 'HR', 'Manager', 'Final'],
       required: true
     },
     description: String,
-    duration: Number, // in minutes
-    interviewers: [{
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User'
-    }]
+    duration: Number // in minutes
   }],
   benefits: [{
     type: String,
@@ -204,10 +198,60 @@ jobSchema.statics.getActiveJobs = function() {
   }).populate('department hiringManager recruiter');
 };
 
+// Method to generate public application link
+jobSchema.methods.getPublicLink = function() {
+  const baseUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+  return `${baseUrl}/apply/${this._id}`;
+};
+
+// Method to check if job is accepting applications
+jobSchema.methods.isAcceptingApplications = function() {
+  return this.status === 'Active' && 
+         (!this.closingDate || this.closingDate >= new Date());
+};
+
+// Static method to get public job details (limited information)
+jobSchema.statics.getPublicJobDetails = function(jobId) {
+  return this.findOne({ 
+    _id: jobId, 
+    status: 'Active',
+    $or: [
+      { closingDate: { $gte: new Date() } },
+      { closingDate: null }
+    ]
+  })
+  .populate('department', 'name')
+  .populate('hiringManager', 'firstName lastName')
+  .select('title description requirements salary employmentType workMode location openings postedDate closingDate department hiringManager benefits tags');
+};
+
 // Transform output
 jobSchema.methods.toJSON = function() {
   const jobObject = this.toObject();
   return jobObject;
+};
+
+// Transform output for public access (limited information)
+jobSchema.methods.toPublicJSON = function() {
+  return {
+    _id: this._id,
+    title: this.title,
+    code: this.code,
+    department: this.department,
+    description: this.description,
+    requirements: this.requirements,
+    salary: this.salary,
+    employmentType: this.employmentType,
+    workMode: this.workMode,
+    location: this.location,
+    openings: this.openings,
+    postedDate: this.postedDate,
+    closingDate: this.closingDate,
+    benefits: this.benefits,
+    tags: this.tags,
+    publicLink: this.getPublicLink(),
+    isAcceptingApplications: this.isAcceptingApplications()
+  };
 };
 
 module.exports = mongoose.model('Job', jobSchema);

@@ -11,6 +11,7 @@ import {
 import Sidebar from './Sidebar';
 import ProfileSidebar from './ProfileSidebar';
 import TopNavBar from './TopNavBar';
+import ChatShortcut from './chat/ChatShortcut';
 
 const DRAWER_WIDTH = 280;
 
@@ -103,6 +104,9 @@ const Layout = ({ children }) => {
           {children}
         </Container>
       </Box>
+
+      {/* Chat Shortcut - Fixed position floating button */}
+      <ChatShortcut />
     </Box>
   );
 };

@@ -167,8 +167,20 @@ const Sidebar = ({ isOpen, onToggle }) => {
       });
     }
 
-    // Recruitment Management - Admin, VP, HR roles
-    if (hasAnyRole(['Admin', 'Vice President', 'HR BP', 'HR Manager', 'HR Executive'])) {
+    // Recruitment Management - HR Manager gets different paths
+    if (hasRole('HR Manager')) {
+      menuItems.push({
+        key: 'recruitment',
+        title: 'Recruitment',
+        icon: 'bi-person-plus',
+        submenu: [
+          { title: 'Job Postings', path: '/hr/recruitment/jobs', icon: 'bi-briefcase' },
+          { title: 'Applications', path: '/hr/recruitment/applications', icon: 'bi-file-person' },
+          { title: 'Interviews', path: '/hr/recruitment/interviews', icon: 'bi-chat-dots' },
+          { title: 'Offer Letters', path: '/hr/recruitment/offers', icon: 'bi-envelope-check' }
+        ]
+      });
+    } else if (hasAnyRole(['Admin', 'Vice President', 'HR BP', 'HR Executive'])) {
       menuItems.push({
         key: 'recruitment',
         title: 'Recruitment',
@@ -181,6 +193,19 @@ const Sidebar = ({ isOpen, onToggle }) => {
         ]
       });
     }
+
+    // Interviewer Schedule - Available to Team Managers and Team Leaders (non-Employee roles)
+    if (hasAnyRole(['Admin', 'Vice President', 'HR BP', 'HR Manager', 'HR Executive', 'Team Manager', 'Team Leader'])) {
+      menuItems.push({
+        key: 'interviewer',
+        title: 'Interviewer',
+        icon: 'bi-calendar-check',
+        submenu: [
+          { title: 'My Interview Schedule', path: '/interviewer/schedule', icon: 'bi-calendar-check' }
+        ]
+      });
+    }
+
 
     // Performance Management
     if (hasAnyRole(['Admin', 'Vice President', 'HR BP', 'HR Manager', 'HR Executive', 'Team Manager', 'Team Leader'])) {

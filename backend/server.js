@@ -23,6 +23,7 @@ const faqRoutes = require('./routes/faq');
 const debugRoutes = require('./routes/debug');
 const chatRoutes = require('./routes/chat');
 const recruitmentRoutes = require('./routes/recruitment');
+const publicRoutes = require('./routes/public');
 
 const app = express();
 const server = http.createServer(app);
@@ -99,6 +100,7 @@ app.use('/api/faq', faqRoutes);
 app.use('/api/debug', debugRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/recruitment', recruitmentRoutes);
+app.use('/api/public', publicRoutes);
 
 // Health check route
 app.get('/api/health', (req, res) => {

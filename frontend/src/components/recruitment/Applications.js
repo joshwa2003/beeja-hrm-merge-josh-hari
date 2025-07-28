@@ -45,6 +45,7 @@ import {
 } from '@mui/icons-material';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../utils/api';
+import ApplicationDetailsModal from './ApplicationDetailsModal';
 
 const Applications = () => {
   const { user } = useAuth();
@@ -53,8 +54,11 @@ const Applications = () => {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [showApplicationDetails, setShowApplicationDetails] = useState(false);
   const [selectedApplication, setSelectedApplication] = useState(null);
   const [anchorEl, setAnchorEl] = useState(null);
+  const [rejectionReason, setRejectionReason] = useState('');
   
   const [filters, setFilters] = useState({
     status: '',
@@ -120,9 +124,8 @@ const Applications = () => {
 
   const fetchUsers = async () => {
     try {
-      const response = await api.get('/users');
-      const userData = response.data?.data || [];
-      setUsers(userData.filter(u => u.role !== 'Employee'));
+      const response = await api.get('/recruitment/interviewers');
+      setUsers(response.data.data || []);
     } catch (error) {
       console.error('Error fetching users:', error);
     }
@@ -142,6 +145,34 @@ const Applications = () => {
       showAlert(error.response?.data?.message || 'Error updating status', 'error');
     }
     setAnchorEl(null);
+  };
+
+  const handleRejectClick = (application) => {
+    setSelectedApplication(application);
+    setRejectionReason('');
+    setShowRejectModal(true);
+    setAnchorEl(null);
+  };
+
+  const handleRejectSubmit = async (e) => {
+    e.preventDefault();
+    
+    if (!rejectionReason.trim()) {
+      showAlert('Please provide a reason for rejection', 'error');
+      return;
+    }
+
+    try {
+      await api.post(`/recruitment/applications/${selectedApplication._id}/reject`, {
+        reason: rejectionReason.trim()
+      });
+      showAlert('Rejection email sent successfully and application status updated', 'success');
+      setShowRejectModal(false);
+      setRejectionReason('');
+      fetchApplications();
+    } catch (error) {
+      showAlert(error.response?.data?.message || 'Error sending rejection email', 'error');
+    }
   };
 
   const handleScheduleInterview = (application) => {
@@ -167,7 +198,14 @@ const Applications = () => {
     e.preventDefault();
     
     try {
-      await api.post(`/recruitment/applications/${selectedApplication._id}/interviews`, scheduleData);
+      const submitData = {
+        ...scheduleData,
+        title: `${scheduleData.type} Interview - Round ${scheduleData.round}`,
+        description: `Interview for ${selectedApplication.firstName} ${selectedApplication.lastName}`,
+        scheduledDate: new Date(`${scheduleData.scheduledDate}T${scheduleData.scheduledTime}`).toISOString()
+      };
+
+      await api.post(`/recruitment/applications/${selectedApplication._id}/interviews`, submitData);
       showAlert('Interview scheduled successfully', 'success');
       setShowScheduleModal(false);
       fetchApplications();
@@ -178,19 +216,25 @@ const Applications = () => {
 
   const handleDownloadResume = async (applicationId) => {
     try {
+      // Use the api utility to ensure correct base URL and headers
       const response = await api.get(`/recruitment/applications/${applicationId}/resume`, {
         responseType: 'blob'
       });
-      
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+
+      // Create download link
+      const url = window.URL.createObjectURL(response.data);
       const link = document.createElement('a');
       link.href = url;
       link.setAttribute('download', `resume_${applicationId}.pdf`);
       document.body.appendChild(link);
       link.click();
       link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      showAlert('Resume downloaded successfully', 'success');
     } catch (error) {
-      showAlert('Error downloading resume', 'error');
+      console.error('Error downloading resume:', error);
+      showAlert('Error downloading resume. Please try again.', 'error');
     }
     setAnchorEl(null);
   };
@@ -220,6 +264,12 @@ const Applications = () => {
   const handleMenuClose = () => {
     setAnchorEl(null);
     setSelectedApplication(null);
+  };
+
+  const handleViewApplication = (application) => {
+    setSelectedApplication(application);
+    setShowApplicationDetails(true);
+    setAnchorEl(null);
   };
 
   return (
@@ -441,6 +491,10 @@ const Applications = () => {
         open={Boolean(anchorEl)}
         onClose={handleMenuClose}
       >
+        <MenuItem onClick={() => handleViewApplication(selectedApplication)}>
+          <VisibilityIcon sx={{ mr: 1 }} />
+          View Application
+        </MenuItem>
         <MenuItem onClick={() => handleDownloadResume(selectedApplication?._id)}>
           <GetAppIcon sx={{ mr: 1 }} />
           Download Resume
@@ -459,9 +513,9 @@ const Applications = () => {
           Schedule Interview
         </MenuItem>
         <Divider />
-        <MenuItem onClick={() => handleStatusUpdate(selectedApplication?._id, 'Rejected')}>
+        <MenuItem onClick={() => handleRejectClick(selectedApplication)}>
           <CloseIcon sx={{ mr: 1 }} />
-          Reject
+          Reject with Reason
         </MenuItem>
       </Menu>
 
@@ -617,6 +671,60 @@ const Applications = () => {
           </DialogActions>
         </form>
       </Dialog>
+
+      {/* Reject Application Dialog */}
+      <Dialog open={showRejectModal} onClose={() => setShowRejectModal(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          Reject Application
+          {selectedApplication && (
+            <Typography variant="body2" color="text.secondary">
+              {selectedApplication.firstName} {selectedApplication.lastName} - {selectedApplication.job?.title}
+            </Typography>
+          )}
+        </DialogTitle>
+        <form onSubmit={handleRejectSubmit}>
+          <DialogContent>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Please provide a constructive reason for rejection. This will be included in the email sent to the candidate.
+            </Typography>
+            <TextField
+              fullWidth
+              multiline
+              rows={4}
+              label="Reason for Rejection"
+              value={rejectionReason}
+              onChange={(e) => setRejectionReason(e.target.value)}
+              placeholder="Thank you for your interest in our company. After careful consideration of your application, we have decided to move forward with other candidates whose qualifications more closely match our current requirements..."
+              required
+              sx={{ mt: 1 }}
+            />
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+              💡 Tip: Keep the feedback constructive and professional. This helps maintain a positive candidate experience.
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setShowRejectModal(false)}>
+              Cancel
+            </Button>
+            <Button 
+              type="submit" 
+              variant="contained" 
+              color="error"
+              startIcon={<CloseIcon />}
+            >
+              Send Rejection Email
+            </Button>
+          </DialogActions>
+        </form>
+      </Dialog>
+
+      {/* Application Details Modal */}
+      <ApplicationDetailsModal
+        open={showApplicationDetails}
+        onClose={() => setShowApplicationDetails(false)}
+        application={selectedApplication}
+        applicationId={selectedApplication?._id}
+      />
     </Box>
   );
 };

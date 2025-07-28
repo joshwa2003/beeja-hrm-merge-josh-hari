@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
+import { ChatShortcutProvider } from './context/ChatShortcutContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Layout from './components/Layout';
 import Login from './components/Login';
@@ -34,20 +35,24 @@ import FAQManagement from './components/helpdesk/FAQManagement';
 import RecruitmentDashboard from './components/recruitment/RecruitmentDashboard';
 import JobPostings from './components/recruitment/JobPostings';
 import Applications from './components/recruitment/Applications';
+import Interviews from './components/admin/Interviews';
+import OfferLetters from './components/admin/OfferLetters';
 import InterviewSchedule from './components/recruitment/InterviewSchedule';
-import PublicJobApplication from './components/recruitment/PublicJobApplication';
+import PublicJobApplication from './components/public/PublicJobApplication';
+import OfferResponse from './components/public/OfferResponse';
 
 
 function App() {
   return (
     <AuthProvider>
-      <Router
-        future={{
-          v7_startTransition: true,
-          v7_relativeSplatPath: true
-        }}
-      >
-        <div className="App">
+      <ChatShortcutProvider>
+        <Router
+          future={{
+            v7_startTransition: true,
+            v7_relativeSplatPath: true
+          }}
+        >
+          <div className="App">
           <Routes>
             {/* Public Routes */}
             <Route path="/login" element={<Login />} />
@@ -447,13 +452,79 @@ function App() {
               } 
             />
 
-            {/* Recruitment Routes */}
+            {/* HR Manager Recruitment Routes */}
+            <Route 
+              path="/hr/recruitment" 
+              element={
+                <ProtectedRoute requiredRoles={['HR Manager']}>
+                  <Layout>
+                    <RecruitmentDashboard />
+                    <JobPostings />
+                  </Layout>
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/hr/recruitment/jobs" 
+              element={
+                <ProtectedRoute requiredRoles={['HR Manager']}>
+                  <Layout>
+                    <JobPostings />
+                  </Layout>
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/hr/recruitment/applications" 
+              element={
+                <ProtectedRoute requiredRoles={['HR Manager']}>
+                  <Layout>
+                    <Applications />
+                  </Layout>
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/hr/recruitment/interviews" 
+              element={
+                <ProtectedRoute requiredRoles={['HR Manager']}>
+                  <Layout>
+                    <Interviews />
+                  </Layout>
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/hr/recruitment/offers" 
+              element={
+                <ProtectedRoute requiredRoles={['HR Manager']}>
+                  <Layout>
+                    <OfferLetters />
+                  </Layout>
+                </ProtectedRoute>
+              } 
+            />
+
+            {/* Interviewer Routes */}
+            <Route 
+              path="/interviewer/schedule" 
+              element={
+                <ProtectedRoute requiredRoles={['Admin', 'Vice President', 'HR BP', 'HR Manager', 'HR Executive', 'Team Manager', 'Team Leader']}>
+                  <Layout>
+                    <InterviewSchedule />
+                  </Layout>
+                </ProtectedRoute>
+              } 
+            />
+
+            {/* Admin Recruitment Routes */}
             <Route 
               path="/admin/recruitment" 
               element={
-                <ProtectedRoute requiredRoles={['Admin', 'Vice President', 'HR BP', 'HR Manager', 'HR Executive']}>
+                <ProtectedRoute requiredRoles={['Admin', 'Vice President', 'HR BP', 'HR Executive']}>
                   <Layout>
                     <RecruitmentDashboard />
+                    <JobPostings />
                   </Layout>
                 </ProtectedRoute>
               } 
@@ -461,7 +532,7 @@ function App() {
             <Route 
               path="/admin/recruitment/jobs" 
               element={
-                <ProtectedRoute requiredRoles={['Admin', 'Vice President', 'HR BP', 'HR Manager', 'HR Executive']}>
+                <ProtectedRoute requiredRoles={['Admin', 'Vice President', 'HR BP', 'HR Executive']}>
                   <Layout>
                     <JobPostings />
                   </Layout>
@@ -481,9 +552,19 @@ function App() {
             <Route 
               path="/admin/recruitment/interviews" 
               element={
-                <ProtectedRoute requiredRoles={['Admin', 'Vice President', 'HR BP', 'HR Manager', 'HR Executive', 'Team Manager', 'Team Leader']}>
+                <ProtectedRoute requiredRoles={['Admin', 'Vice President', 'HR BP', 'HR Executive', 'Team Manager', 'Team Leader']}>
                   <Layout>
                     <InterviewSchedule />
+                  </Layout>
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/admin/recruitment/offer-letters" 
+              element={
+                <ProtectedRoute requiredRoles={['Admin', 'Vice President', 'HR BP', 'HR Manager', 'HR Executive']}>
+                  <Layout>
+                    <OfferLetters />
                   </Layout>
                 </ProtectedRoute>
               } 
@@ -493,6 +574,14 @@ function App() {
             <Route 
               path="/jobs/:jobId/apply" 
               element={<PublicJobApplication />} 
+            />
+            <Route 
+              path="/apply/:jobId" 
+              element={<PublicJobApplication />} 
+            />
+            <Route 
+              path="/offer-response/:offerId" 
+              element={<OfferResponse />} 
             />
 
             {/* Reports Routes */}
@@ -608,6 +697,7 @@ function App() {
           </Routes>
         </div>
       </Router>
+      </ChatShortcutProvider>
     </AuthProvider>
   );
 }
